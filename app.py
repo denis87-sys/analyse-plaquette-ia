@@ -376,7 +376,7 @@ if uploaded_file:
                 donnees = json.loads(clean_json)
                 
                 # 4. Génération du PDF avec Jinja2 et WeasyPrint
-                rendered_html = Template(HTML_TEMPLATE).render(**donnees)
+                rendered_html = Template(HTML_TEMPLATE).render(data=donnees)
                 pdf_output = HTML(string=rendered_html).write_pdf()
                 
                 st.success("✅ Analyse terminée avec succès !")
