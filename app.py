@@ -357,7 +357,7 @@ if uploaded_file:
                 # 2. Appel à l'API Claude
                 client = anthropic.Anthropic(api_key=api_key)
                 response = client.messages.create(
-                   model="claude-3-haiku-20240307",
+                   model="claude-3-5-sonnet-latest",
                     max_tokens=4096,
                     extra_body={"temperature": 0.1},  # <-- La nouvelle méthode stricte est ici
                     system=SYSTEM_PROMPT,
