@@ -364,28 +364,27 @@ if uploaded_file:
                 pdf_base64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
 
                 response = client.messages.create(
-                    model=modele_choisi,
-                    max_tokens=8192,
-                    extra_body={"temperature": 0.1},
-                    system=SYSTEM_PROMPT,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "document",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "application/pdf",
-                                    "data": pdf_base64
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": "Analyse ce dossier immobilier et renvoie uniquement l'objet JSON complet demandé."
+                model=modele_choisi,
+                max_tokens=8192,
+                system=SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": pdf_base64
                             }
-                        ]
-                    }]
-                )
+                        },
+                        {
+                            "type": "text",
+                            "text": instructions_acheteur
+                        }
+                    ]
+                }]
+            )
 
                 raw_text = response.content[0].text.strip()
 
