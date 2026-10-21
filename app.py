@@ -56,13 +56,13 @@ HTML_TEMPLATE = """
 st.title("🏢 Analyseur de Plaquette Immobilière (IA)")
 st.write("Uploadez une plaquette commerciale (PDF) pour obtenir un audit automatique (Red Flags, Prix, Agencement).")
 
-# Demander la clé API dans une barre latérale (sécurisé)
-api_key = st.sidebar.text_input("Clé API Anthropic", type="password")
+# Streamlit va chercher la clé de manière invisible dans son coffre-fort
+api_key = st.secrets["ANTHROPIC_API_KEY"]
 
 # Zone d'upload
 uploaded_file = st.file_uploader("Chargez le PDF de la plaquette", type=["pdf"])
 
-if uploaded_file and api_key:
+if uploaded_file:
     if st.button("Lancer l'analyse 🚀"):
         # st.spinner affiche une animation de chargement pendant l'exécution du bloc "with"
         with st.spinner("Analyse en cours par Claude 3.5 Sonnet (cela peut prendre 15 à 30 secondes)..."):
