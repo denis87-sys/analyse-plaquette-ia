@@ -42,23 +42,87 @@ except Exception as e:
     st.stop()
 
 
-# --- FONCTION DE NETTOYAGE ET RÉPARATION AUTOMATIQUE DU JSON ---
-def charger_json_robuste(raw_text):
-    debut = raw_text.find("{")
-    fin = raw_text.rfind("}")
-    json_str = raw_text[debut:fin + 1] if (debut != -1 and fin != -1) else raw_text
+# --- STRUCTURE PAR DÉFAUT (Sécurité anti-crash Jinja2 / WeasyPrint) ---
+def obtenir_structure_defaut():
+    return {
+        "1_synthese_et_verdict": {
+            "verdict_conditionnel": "Non mentionné",
+            "scenarios": [],
+            "quatre_alertes": [],
+            "prochaine_etape": "Non mentionné"
+        },
+        "2_identification_bien": {
+            "caracteristiques": [],
+            "donnees_manquantes": []
+        },
+        "3_localisation_et_cadre": {
+            "accessibilite_et_bruit": "Non mentionné",
+            "zone_affectation_projets": "Non mentionné",
+            "fiscalite_communale": "Non mentionné",
+            "compatibilite_criteres_utilisateur": "Non mentionné"
+        },
+        "4_lecture_critique": [],
+        "5_copropriete_et_batiment": {
+            "points_favorables": [],
+            "points_a_instruire": [],
+            "energie_et_calendrier_legal": "Non mentionné"
+        },
+        "6_valorisation": {
+            "prix_m2_annonce": "Non mentionné",
+            "prix_m2_recalcule": "Non mentionné",
+            "comparables_estimes": [],
+            "test_rendement_locatif": "Non mentionné"
+        },
+        "7_matrice_risques": [],
+        "8_strategie_offre": {
+            "sequence_demarches": [],
+            "arguments_negociation_par_poids": [],
+            "atouts_vendeur": []
+        },
+        "9_couts_acquisition_detention": {
+            "frais_acquisition_cibles": "Non mentionné",
+            "cout_total_entree": "Non mentionné",
+            "cout_detention_annuel_reel": "Non mentionné"
+        },
+        "10_financement": {
+            "hypotheses_prix_demande": "Non mentionné",
+            "hypotheses_prix_cible": "Non mentionné",
+            "composition_fonds_propres": "Non mentionné",
+            "modalites_amortissement_2e_rang": "Non mentionné"
+        },
+        "11_fiscalite": {
+            "impact_impot_foncier": "Non mentionné",
+            "impact_suppression_valeur_locative_2029": "Non mentionné"
+        },
+        "annexe_a_documents_a_reclamer": [],
+        "annexe_b_points_visite": []
+    }
 
-    # 1er essai direct
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        pass
 
-    # Suppression des virgules en trop avant } ou ]
-    json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+def reparer_et_fermer_json(texte):
+    # Nettoyage des balises markdown éventuelles
+    texte = re.sub(r"```(?:json)?", "", texte).strip()
 
-    # Réparation automatique des guillemets doubles internes non échappés
+    # Recherche du début réel du JSON
+    debut = texte.find('{"1_synthese_et_verdict"')
+    if debut == -1:
+        debut = texte.find("{")
+    if debut == -1:
+        raise ValueError(f"Aucun JSON détecté dans la réponse de l'IA. Début reçu : {texte[:200]}")
+
+    json_str = texte[debut:]
+
+    # 1er essai direct si le JSON est déjà propre
+    fin = json_str.rfind("}")
+    if fin != -1:
+        try:
+            return json.loads(json_str[:fin + 1])
+        except json.JSONDecodeError:
+            pass
+
+    # Parcours caractère par caractère : répare les guillemets internes et suit les blocs ouverts
     out = []
+    stack = []
     in_string = False
     escape = False
     n = len(json_str)
@@ -81,18 +145,72 @@ def charger_json_robuste(raw_text):
                 while j < n and json_str[j] in " \t\r\n":
                     j += 1
                 next_ch = json_str[j] if j < n else ""
-                if next_ch in [":", ",", "}", "]"]:
+                if next_ch in [":", ",", "}", "]", ""]:
                     in_string = False
                     out.append(ch)
                 else:
                     out.append('\\"')
             continue
-        if in_string and ch == "\n":
-            out.append("\\n")
-            continue
-        out.append(ch)
 
-    return json.loads("".join(out))
+        if in_string:
+            if ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                continue
+            elif ch == "\t":
+                out.append("\\t")
+            else:
+                out.append(ch)
+        else:
+            if ch in "{[":
+                stack.append("}" if ch == "{" else "]")
+                out.append(ch)
+            elif ch in "}]":
+                if stack and stack[-1] == ch:
+                    stack.pop()
+                    out.append(ch)
+                    if not stack:
+                        break
+            else:
+                out.append(ch)
+
+    repare = "".join(out)
+    if in_string:
+        repare += '"'
+
+    # Nettoyage d'une virgule ou d'un deux-points final si le texte a été coupé
+    repare = re.sub(r"[,:\s]+$", "", repare)
+
+    # Fermeture automatique des crochets/accolades ouverts
+    while stack:
+        repare = re.sub(r",\s*$", "", repare)
+        repare += stack.pop()
+
+    repare = re.sub(r",\s*([}\]])", r"\1", repare)
+    return json.loads(repare)
+
+
+def extraire_donnees_claude(response):
+    # 1. Extraction depuis les blocs de texte classiques
+    text_blocks = [ getattr(b, "text", "") for b in response.content if getattr(b, "text", "") ]
+    raw_text = "\n".join(text_blocks).strip()
+
+    # 2. Secours : si le bloc texte est vide ou sans '{', on cherche dans le ThinkingBlock
+    if "{" not in raw_text:
+        thinking_blocks = [ getattr(b, "thinking", "") for b in response.content if getattr(b, "thinking", "") ]
+        raw_text = "\n".join(thinking_blocks).strip()
+
+    donnees_extraites = reparer_et_fermer_json(raw_text)
+
+    # 3. Fusion avec la structure par défaut pour éviter toute erreur dans le template HTML
+    resultat = obtenir_structure_defaut()
+    if isinstance(donnees_extraites, dict):
+        for cle, valeur in donnees_extraites.items():
+            if cle in resultat and isinstance(resultat[cle], dict) and isinstance(valeur, dict):
+                resultat[cle].update(valeur)
+            elif valeur is not None:
+                resultat[cle] = valeur
+    return resultat
 
 
 # --- PROMPT SYSTÈME (Due Diligence Suisse Romande) ---
@@ -120,8 +238,8 @@ Tu es un analyste immobilier senior, spécialisé dans la due diligence pré-acq
 - Financement : 10 % de fonds propres durs minimum, retrait anticipé vs mise en gage 2e pilier, amortissement direct vs indirect via 3e pilier A. Si résidence secondaire : pas de 2e pilier, 30-40 % de fonds propres.
 
 # RÈGLE CRITIQUE POUR LE FORMAT JSON
-- Réponds UNIQUEMENT avec un objet JSON valide (sans texte ni balises markdown avant ou après).
-- N'utilise JAMAIS de guillemets doubles droits (") à l'intérieur de tes textes ou citations : utilise exclusivement des guillemets français (« et ») ou des apostrophes (').
+- Commence IMMÉDIATEMENT ta réponse par le caractère { et termine par }. Aucun texte ni balise markdown avant ou après.
+- N'utilise JAMAIS de guillemets doubles droits (") à l'intérieur de tes textes : utilise exclusivement des guillemets français (« et ») ou des apostrophes (').
 
 Structure JSON stricte :
 {
@@ -425,10 +543,10 @@ if uploaded_file:
                 # 1. Lecture du PDF en Base64
                 pdf_base64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
 
-                # 2. Appel à l'API Claude
+                # 2. Appel à l'API Claude (max_tokens augmenté à 32000 pour laisser place au Thinking + JSON complet)
                 response = client.messages.create(
                     model=modele_choisi,
-                    max_tokens=16000,
+                    max_tokens=32000,
                     system=SYSTEM_PROMPT,
                     messages=[{
                         "role": "user",
@@ -444,27 +562,22 @@ if uploaded_file:
                             {
                                 "type": "text",
                                 "text": (
-                                    "Analyse ce document et renvoie uniquement le JSON valide. "
-                                    "Attention : n'utilise jamais de guillemets droits (\") à l'intérieur des textes, "
-                                    "utilise uniquement des guillemets français (« ») ou des apostrophes."
+                                    "Analyse ce document et renvoie uniquement l'objet JSON valide commençant par { et finissant par }. "
+                                    "Sois synthétique dans chaque champ pour que le JSON soit complet, et n'utilise jamais de guillemets droits (\") dans tes phrases."
                                 )
                             }
                         ]
                     }]
                 )
 
-                # 3. Extraction sécurisée du texte (ignore le ThinkingBlock)
-                text_blocks = [b.text for b in response.content if hasattr(b, "text")]
-                raw_text = "\n".join(text_blocks).strip()
+                # 3. Extraction, réparation et validation automatique du JSON
+                donnees = extraire_donnees_claude(response)
 
-                # 4. Nettoyage et réparation automatique du JSON
-                donnees = charger_json_robuste(raw_text)
-
-                # 5. Génération du PDF avec WeasyPrint
+                # 4. Génération du PDF avec WeasyPrint
                 rendered_html = Template(HTML_TEMPLATE).render(data=donnees)
                 pdf_bytes = HTML(string=rendered_html).write_pdf()
 
-                # 6. Téléchargement
+                # 5. Téléchargement
                 st.success("✅ Analyse terminée !")
                 st.download_button(
                     label="📥 Télécharger le Rapport PDF",
