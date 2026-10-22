@@ -6,10 +6,11 @@ import re
 from jinja2 import Template
 from weasyprint import HTML
 
-st.set_page_config(page_title="Due Diligence Immo Suisse", page_icon="🏢", layout="centered")
-st.title("🇨🇭 Analyse Due Diligence Immobilier (Suisse Romande)")
+# --- CONFIGURATION DE LA PAGE (Visuel d'origine) ---
+st.set_page_config(page_title="Analyseur Immo IA", page_icon="🏢")
+st.title("🏢 Analyseur de Plaquette Immobilière par IA")
 
-# Récupération sécurisée de la clé API
+# --- CLÉ API & SÉLECTEUR DE VERSION ---
 if "ANTHROPIC_API_KEY" not in st.secrets:
     st.error("Clé ANTHROPIC_API_KEY introuvable dans les Secrets Streamlit.")
     st.stop()
@@ -17,28 +18,30 @@ if "ANTHROPIC_API_KEY" not in st.secrets:
 api_key = st.secrets["ANTHROPIC_API_KEY"]
 client = anthropic.Anthropic(api_key=api_key)
 
-# --- DÉTECTION AUTOMATIQUE DES MODÈLES ACTIFS ---
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def charger_modeles_actifs(_api_key):
     c = anthropic.Anthropic(api_key=_api_key)
-    liste = [m.id for m in c.models.list().data]
-    # On place les modèles Sonnet en tête de liste
-    sonnets = [m for m in liste if "sonnet" in m.lower()]
-    autres = [m for m in liste if "sonnet" not in m.lower()]
+    tous_les_modeles = [m.id for m in c.models.list().data]
+    modeles_valides = [
+        m for m in tous_les_modeles
+        if "20241022" not in m and "20240620" not in m
+    ]
+    sonnets = [m for m in modeles_valides if "sonnet" in m.lower()]
+    autres = [m for m in modeles_valides if "sonnet" not in m.lower()]
     return sonnets + autres
 
 try:
     modeles_disponibles = charger_modeles_actifs(api_key)
     modele_choisi = st.selectbox(
-        "Modèle Claude actif détecté sur votre compte :",
+        "Version du modèle Claude :",
         options=modeles_disponibles,
         index=0
     )
 except Exception as e:
-    st.error(f"Impossible de lister les modèles Anthropic. Vérifiez votre clé API : {e}")
+    st.error(f"Impossible de récupérer la liste des modèles : {e}")
     st.stop()
 
-# --- PROMPT SYSTÈME SUISSE ROMANDE ---
+# --- PROMPT SYSTÈME (Due Diligence Suisse Romande) ---
 SYSTEM_PROMPT = """
 # RÔLE ET EXPERTISE
 Tu es un analyste immobilier senior, spécialisé dans la due diligence pré-acquisition en Suisse romande. L'utilisateur te fournit la documentation de vente d'un bien (plaquette, plans, CECB, etc.). Ta mission est de produire une note d'analyse d'acquisition exhaustive et critique en français.
@@ -141,7 +144,7 @@ Réponds UNIQUEMENT avec un objet JSON valide (sans balises markdown avant ou ap
 }
 """
 
-# --- TEMPLATE HTML CHARTE BLEUE ---
+# --- TEMPLATE HTML (Charte bleue PDF A4) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fr">
@@ -230,7 +233,7 @@ HTML_TEMPLATE = """
         <li><strong>Accessibilité & Bruit :</strong> {{ data['3_localisation_et_cadre'].accessibilite_et_bruit }}</li>
         <li><strong>Zone & Projets :</strong> {{ data['3_localisation_et_cadre'].zone_affectation_projets }}</li>
         <li><strong>Fiscalité :</strong> {{ data['3_localisation_et_cadre'].fiscalite_communale }}</li>
-        <li><strong>Compatibilité :</strong> {{ data['3_localisation_et_cadre'].compatibilite_criteres_utilisateur }}</li>
+        <li><strong>Observations :</strong> {{ data['3_localisation_et_cadre'].compatibilite_criteres_utilisateur }}</li>
     </ul>
 
     <h2>4. Lecture critique de la documentation</h2>
@@ -355,52 +358,56 @@ HTML_TEMPLATE = """
 </html>
 """
 
-uploaded_file = st.file_uploader("📄 Déposez la plaquette ou le dossier immobilier (PDF)", type=["pdf"])
+# --- INTERFACE PRINCIPALE ÉPURÉE ---
+uploaded_file = st.file_uploader("Déposez la plaquette commerciale (PDF)", type="pdf")
 
 if uploaded_file:
-    if st.button("Lancer l'analyse Due Diligence 🚀"):
-        with st.spinner(f"Analyse approfondie en cours avec {modele_choisi}... (30 à 60 secondes)"):
+    if st.button("Lancer l'analyse 🚀"):
+        with st.spinner("Claude examine le document et les plans... (environ 30 secondes)"):
             try:
+                # 1. Lecture du PDF en Base64
                 pdf_base64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
 
+                # 2. Appel à l'API Claude (sans temperature ni variable externe)
                 response = client.messages.create(
-                model=modele_choisi,
-                max_tokens=8192,
-                system=SYSTEM_PROMPT,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf_base64
+                    model=modele_choisi,
+                    max_tokens=8192,
+                    system=SYSTEM_PROMPT,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf_base64
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": "Analyse ce document et renvoie uniquement le JSON valide."
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": instructions_acheteur
-                        }
-                    ]
-                }]
-            )
+                        ]
+                    }]
+                )
 
+                # 3. Extraction sécurisée du JSON
                 raw_text = response.content[0].text.strip()
-
-                # Extraction propre du JSON même si l'IA ajoute ```json ... ```
                 match = re.search(r"\{.*\}", raw_text, re.DOTALL)
                 json_str = match.group(0) if match else raw_text
                 donnees = json.loads(json_str)
 
+                # 4. Génération du PDF avec WeasyPrint
                 rendered_html = Template(HTML_TEMPLATE).render(data=donnees)
                 pdf_bytes = HTML(string=rendered_html).write_pdf()
 
-                st.success("✅ Analyse terminée ! Votre rapport PDF est prêt.")
+                # 5. Téléchargement
+                st.success("✅ Analyse terminée !")
                 st.download_button(
-                    label="📥 Télécharger la Note d'Analyse (PDF)",
+                    label="📥 Télécharger le Rapport PDF",
                     data=pdf_bytes,
-                    file_name="Note_Analyse_Acquisition.pdf",
+                    file_name="Rapport_Analyse_Immo.pdf",
                     mime="application/pdf"
                 )
 
