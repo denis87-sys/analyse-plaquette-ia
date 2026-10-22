@@ -363,15 +363,15 @@ uploaded_file = st.file_uploader("Déposez la plaquette commerciale (PDF)", type
 
 if uploaded_file:
     if st.button("Lancer l'analyse 🚀"):
-        with st.spinner("Claude examine le document et les plans... (environ 30 secondes)"):
+        with st.spinner("Claude examine le document et les plans... (environ 30 à 60 secondes)"):
             try:
                 # 1. Lecture du PDF en Base64
                 pdf_base64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
 
-                # 2. Appel à l'API Claude (sans temperature ni variable externe)
+                # 2. Appel à l'API Claude
                 response = client.messages.create(
                     model=modele_choisi,
-                    max_tokens=8192,
+                    max_tokens=16000,
                     system=SYSTEM_PROMPT,
                     messages=[{
                         "role": "user",
@@ -392,8 +392,10 @@ if uploaded_file:
                     }]
                 )
 
-                # 3. Extraction sécurisée du JSON
-                raw_text = response.content[0].text.strip()
+                # 3. Extraction sécurisée du texte (ignore le ThinkingBlock)
+                text_blocks = [b.text for b in response.content if hasattr(b, "text")]
+                raw_text = "\n".join(text_blocks).strip()
+
                 match = re.search(r"\{.*\}", raw_text, re.DOTALL)
                 json_str = match.group(0) if match else raw_text
                 donnees = json.loads(json_str)
