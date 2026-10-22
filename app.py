@@ -41,6 +41,60 @@ except Exception as e:
     st.error(f"Impossible de récupérer la liste des modèles : {e}")
     st.stop()
 
+
+# --- FONCTION DE NETTOYAGE ET RÉPARATION AUTOMATIQUE DU JSON ---
+def charger_json_robuste(raw_text):
+    debut = raw_text.find("{")
+    fin = raw_text.rfind("}")
+    json_str = raw_text[debut:fin + 1] if (debut != -1 and fin != -1) else raw_text
+
+    # 1er essai direct
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        pass
+
+    # Suppression des virgules en trop avant } ou ]
+    json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+
+    # Réparation automatique des guillemets doubles internes non échappés
+    out = []
+    in_string = False
+    escape = False
+    n = len(json_str)
+
+    for i, ch in enumerate(json_str):
+        if escape:
+            out.append(ch)
+            escape = False
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                out.append(ch)
+            else:
+                j = i + 1
+                while j < n and json_str[j] in " \t\r\n":
+                    j += 1
+                next_ch = json_str[j] if j < n else ""
+                if next_ch in [":", ",", "}", "]"]:
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append('\\"')
+            continue
+        if in_string and ch == "\n":
+            out.append("\\n")
+            continue
+        out.append(ch)
+
+    return json.loads("".join(out))
+
+
 # --- PROMPT SYSTÈME (Due Diligence Suisse Romande) ---
 SYSTEM_PROMPT = """
 # RÔLE ET EXPERTISE
@@ -65,8 +119,11 @@ Tu es un analyste immobilier senior, spécialisé dans la due diligence pré-acq
 - Coût de détention réel : taux effectif 1,5 à 2,0 %, distinct du taux calculatoire.
 - Financement : 10 % de fonds propres durs minimum, retrait anticipé vs mise en gage 2e pilier, amortissement direct vs indirect via 3e pilier A. Si résidence secondaire : pas de 2e pilier, 30-40 % de fonds propres.
 
-# FORMAT DE RÉPONSE EXIGÉ
-Réponds UNIQUEMENT avec un objet JSON valide (sans balises markdown avant ou après) respectant exactement cette structure :
+# RÈGLE CRITIQUE POUR LE FORMAT JSON
+- Réponds UNIQUEMENT avec un objet JSON valide (sans texte ni balises markdown avant ou après).
+- N'utilise JAMAIS de guillemets doubles droits (") à l'intérieur de tes textes ou citations : utilise exclusivement des guillemets français (« et ») ou des apostrophes (').
+
+Structure JSON stricte :
 {
   "1_synthese_et_verdict": {
     "verdict_conditionnel": "string",
@@ -244,7 +301,7 @@ HTML_TEMPLATE = """
         </tr>
         {% for ligne in data['4_lecture_critique'] %}
         <tr>
-            <td><em>"{{ ligne.formulation_vendeur }}"</em></td>
+            <td><em>« {{ ligne.formulation_vendeur }} »</em></td>
             <td>{{ ligne.realite_terrain }}</td>
         </tr>
         {% endfor %}
@@ -363,7 +420,7 @@ uploaded_file = st.file_uploader("Déposez la plaquette commerciale (PDF)", type
 
 if uploaded_file:
     if st.button("Lancer l'analyse 🚀"):
-        with st.spinner("Claude examine le document et les plans... (environ 30 à 60 secondes)"):
+        with st.spinner("Claude examine le document et les plans... (cela peut prendre quelques minutes)"):
             try:
                 # 1. Lecture du PDF en Base64
                 pdf_base64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
@@ -386,7 +443,11 @@ if uploaded_file:
                             },
                             {
                                 "type": "text",
-                                "text": "Analyse ce document et renvoie uniquement le JSON valide."
+                                "text": (
+                                    "Analyse ce document et renvoie uniquement le JSON valide. "
+                                    "Attention : n'utilise jamais de guillemets droits (\") à l'intérieur des textes, "
+                                    "utilise uniquement des guillemets français (« ») ou des apostrophes."
+                                )
                             }
                         ]
                     }]
@@ -396,15 +457,14 @@ if uploaded_file:
                 text_blocks = [b.text for b in response.content if hasattr(b, "text")]
                 raw_text = "\n".join(text_blocks).strip()
 
-                match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-                json_str = match.group(0) if match else raw_text
-                donnees = json.loads(json_str)
+                # 4. Nettoyage et réparation automatique du JSON
+                donnees = charger_json_robuste(raw_text)
 
-                # 4. Génération du PDF avec WeasyPrint
+                # 5. Génération du PDF avec WeasyPrint
                 rendered_html = Template(HTML_TEMPLATE).render(data=donnees)
                 pdf_bytes = HTML(string=rendered_html).write_pdf()
 
-                # 5. Téléchargement
+                # 6. Téléchargement
                 st.success("✅ Analyse terminée !")
                 st.download_button(
                     label="📥 Télécharger le Rapport PDF",
