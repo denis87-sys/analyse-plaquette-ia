@@ -543,8 +543,8 @@ if uploaded_file:
                 # 1. Lecture du PDF en Base64
                 pdf_base64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
 
-                # 2. Appel à l'API Claude (max_tokens augmenté à 32000 pour laisser place au Thinking + JSON complet)
-                response = client.messages.create(
+                # 2. Appel à l'API Claude en mode STREAMING (requis pour max_tokens=32000)
+                with client.messages.stream(
                     model=modele_choisi,
                     max_tokens=32000,
                     system=SYSTEM_PROMPT,
@@ -568,7 +568,8 @@ if uploaded_file:
                             }
                         ]
                     }]
-                )
+                ) as stream:
+                    response = stream.get_final_message()
 
                 # 3. Extraction, réparation et validation automatique du JSON
                 donnees = extraire_donnees_claude(response)
