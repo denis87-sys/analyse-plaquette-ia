@@ -41,7 +41,6 @@ def charger_modeles_actifs(_api_key):
 
 try:
     modeles_disponibles = charger_modeles_actifs(api_key)
-    # Option Mode Test Gratuit (0 CHF) ajoutée au sélecteur pour tester le PDF sans consommer de crédits
     options_selecteur = modeles_disponibles + ["🧪 Mode Test Gratuit (0 crédit API — Cache / Démo)"]
     modele_choisi = st.selectbox(
         "Version du modèle Claude :",
@@ -52,8 +51,14 @@ except Exception as e:
     st.error(f"Impossible de récupérer la liste des modèles : {e}")
     st.stop()
 
+# Case à cocher du cache intelligent (activée par défaut)
+utiliser_cache = st.checkbox(
+    "💾 Activer le cache intelligent (évite de repayer si vous cliquez deux fois sur le même PDF)",
+    value=True
+)
 
-# --- STRUCTURE PAR DÉFAUT (Sécurité anti-crash Jinja2 / WeasyPrint enrichie avec Prompt.txt) ---
+
+# --- STRUCTURE PAR DÉFAUT COMPLÈTE ---
 def obtenir_structure_defaut():
     return {
         "1_synthese_et_verdict": {
@@ -271,10 +276,8 @@ DONNEES_DEMO_TEST = {
 
 
 def reparer_et_fermer_json(texte):
-    # Nettoyage des balises markdown éventuelles
     texte = re.sub(r"```(?:json)?", "", texte).strip()
 
-    # Recherche du début réel du JSON
     debut = texte.find('{"1_synthese_et_verdict"')
     if debut == -1:
         debut = texte.find("{")
@@ -283,7 +286,6 @@ def reparer_et_fermer_json(texte):
 
     json_str = texte[debut:]
 
-    # 1er essai direct si le JSON est déjà propre
     fin = json_str.rfind("}")
     if fin != -1:
         try:
@@ -291,7 +293,6 @@ def reparer_et_fermer_json(texte):
         except json.JSONDecodeError:
             pass
 
-    # Parcours caractère par caractère : répare les guillemets internes et suit les blocs ouverts
     out = []
     stack = []
     in_string = False
@@ -349,10 +350,8 @@ def reparer_et_fermer_json(texte):
     if in_string:
         repare += '"'
 
-    # Nettoyage d'une virgule ou d'un deux-points final si le texte a été coupé
     repare = re.sub(r"[,:\s]+$", "", repare)
 
-    # Fermeture automatique des crochets/accolades ouverts
     while stack:
         repare = re.sub(r",\s*$", "", repare)
         repare += stack.pop()
@@ -361,38 +360,87 @@ def reparer_et_fermer_json(texte):
     return json.loads(repare)
 
 
-def fusionner_avec_defaut(donnees_extraites):
+def normaliser_et_fusionner(donnees_extraites):
+    """Fusionne avec la structure par défaut et corrige les éventuels alias de clés utilisés par Claude."""
     resultat = obtenir_structure_defaut()
-    if isinstance(donnees_extraites, dict):
-        for cle, valeur in donnees_extraites.items():
-            if cle in resultat and isinstance(resultat[cle], dict) and isinstance(valeur, dict):
-                resultat[cle].update(valeur)
-            elif valeur is not None:
-                resultat[cle] = valeur
+    if not isinstance(donnees_extraites, dict):
+        return resultat
+
+    for cle, valeur in donnees_extraites.items():
+        if cle in resultat and isinstance(resultat[cle], dict) and isinstance(valeur, dict):
+            for k, v in valeur.items():
+                if v is not None and v != "":
+                    resultat[cle][k] = v
+        elif valeur is not None:
+            resultat[cle] = valeur
+
+    # Normalisation Section 3 (au cas où Claude utilise un synonyme de clé)
+    s3 = resultat["3_localisation_et_cadre"]
+    if s3.get("accessibilite_et_bruit") in [None, "", "Non mentionné"]:
+        for alias in ["accessibilite", "accessibilite_bruit", "bruit", "transports_et_bruit"]:
+            if s3.get(alias):
+                s3["accessibilite_et_bruit"] = s3[alias]
+                break
+
+    # Normalisation Section 11 (si Claude remplit un sous-ensemble des champs fiscaux)
+    s11 = resultat["11_fiscalite"]
+    if s11.get("taux_communal_et_comparaison") in [None, "", "Non mentionné"]:
+        for alias in ["taux_communal", "fiscalite_communale"]:
+            if s11.get(alias):
+                s11["taux_communal_et_comparaison"] = s11[alias]
+                break
+    if s11.get("impact_impot_foncier") in [None, "", "Non mentionné"]:
+        for alias in ["impot_foncier", "impot_foncier_et_forfait_entretien"]:
+            if s11.get(alias):
+                s11["impact_impot_foncier"] = s11[alias]
+                break
+
     return resultat
 
 
+def est_analyse_complete(donnees: dict) -> bool:
+    """Vérifie que le JSON n'a pas été tronqué en cours de route avant d'accepter ou mettre en cache."""
+    if not isinstance(donnees, dict):
+        return False
+    try:
+        # Vérification que les sections 4, 6, 7, 9, 10, 11 et les annexes sont bien remplies
+        if not donnees.get("4_lecture_critique"):
+            return False
+        if not donnees.get("7_matrice_risques"):
+            return False
+        if donnees.get("6_valorisation", {}).get("prix_m2_annonce", "Non mentionné") == "Non mentionné":
+            return False
+        if donnees.get("9_couts_acquisition_detention", {}).get("cout_total_entree", "Non mentionné") == "Non mentionné":
+            return False
+        if not donnees.get("annexe_a_documents_a_reclamer"):
+            return False
+        if not donnees.get("annexe_b_points_visite"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def extraire_donnees_claude(response):
-    # 1. Extraction depuis les blocs de texte classiques
     text_blocks = [getattr(b, "text", "") for b in response.content if getattr(b, "text", "")]
     raw_text = "\n".join(text_blocks).strip()
 
-    # 2. Secours : si le bloc texte est vide ou sans '{', on cherche dans le ThinkingBlock
     if "{" not in raw_text:
         thinking_blocks = [getattr(b, "thinking", "") for b in response.content if getattr(b, "thinking", "")]
         raw_text = "\n".join(thinking_blocks).strip()
 
     donnees_extraites = reparer_et_fermer_json(raw_text)
-    return fusionner_avec_defaut(donnees_extraites)
+    return normaliser_et_fusionner(donnees_extraites)
 
 
 # --- FILTRES JINJA2 POUR LES BADGES [A] [E] [V] ET LE NETTOYAGE DES CHEVRONS ---
 def format_badges(text):
     if not isinstance(text, str):
         return str(text)
-    text = re.sub(r"\[(A)\]", r'<span class="badge-rel badge-A">A</span>', text)
-    text = re.sub(r"\[(E)\]", r'<span class="badge-rel badge-E">E</span>', text)
-    text = re.sub(r"\[(V)\]", r'<span class="badge-rel badge-V">V</span>', text)
+    # Convertit aussi bien [A], [E], [V] que [V photo], [V photos], [A, carte], etc.
+    text = re.sub(r"\[\s*A(?:\s*[,/]\s*[^\]]+)?\s*\]", r'<span class="badge-rel badge-A">A</span>', text)
+    text = re.sub(r"\[\s*E(?:\s*[,/]\s*[^\]]+)?\s*\]", r'<span class="badge-rel badge-E">E</span>', text)
+    text = re.sub(r"\[\s*V(?:\s+[^\]]+|\s*[,/]\s*[^\]]+)?\s*\]", r'<span class="badge-rel badge-V">V</span>', text)
     return text
 
 def clean_quotes(text):
@@ -454,11 +502,12 @@ Traite obligatoirement en section 10 :
 1. Amortissement indirect du 2e rang : compare systématiquement l'amortissement annuel requis aux plafonds ci-dessus (<= 7'258 CHF : intégral sur un seul 3a ; entre 7'258 et 14'516 CHF : intégral possible seulement avec deux 3a en couple, sinon mix direct/indirect ; > 14'516 CHF : combinaison inévitable, indique la part amortissable indirectement et le solde à amortir directement). Rappelle l'arbitrage avec la réforme 2029.
 2. Constitution des fonds propres : le 3a compte parmi les fonds propres « durs » (couvre les 10 % minimum exigibles hors 2e pilier). Si résidence secondaire : pas de 2e pilier, 30-40 % de fonds propres, charges cumulées avec la résidence principale.
 
-# 5. RÈGLE CRITIQUE POUR LE FORMAT JSON
+# 5. RÈGLE CRITIQUE POUR LE FORMAT JSON (OBLIGATOIRE : REMPLIR LES 11 SECTIONS ET ANNEXES)
 - Commence IMMÉDIATEMENT ta réponse par le caractère { et termine par }. Aucun texte ni balise markdown avant ou après.
 - N'utilise JAMAIS de guillemets doubles droits (") à l'intérieur de tes textes : utilise exclusivement des apostrophes (') ou guillemets français (« et »).
+- Sois dense, synthétique et direct (2 à 3 phrases par champ texte, 5 à 7 lignes par tableau) afin que TOUTES les sections de 1 à 11, les tableaux (comparables, grille_ajustement, tableau_financement, matrice_risques), les annexes A et B et la conclusion soient 100 % remplis sans jamais être tronqués.
 
-Structure JSON stricte :
+Structure JSON stricte à remplir intégralement :
 {
   "1_synthese_et_verdict": {
     "verdict_conditionnel": "string (1 paragraphe dense)",
@@ -470,7 +519,7 @@ Structure JSON stricte :
         "prix_plafond": "string"
       }
     ],
-    "quatre_alertes": ["string"],
+    "quatre_alertes": ["string (exactement 4 alertes)"],
     "prochaine_etape": "string"
   },
   "2_identification_bien": {
@@ -478,7 +527,7 @@ Structure JSON stricte :
     "donnees_manquantes": ["string"]
   },
   "3_localisation_et_cadre": {
-    "accessibilite_et_bruit": "string",
+    "accessibilite_et_bruit": "string (obligatoire : transports, route, bruit)",
     "zone_affectation_projets": "string",
     "fiscalite_communale": "string (comparer aux 69,4 pts de moyenne cantonale VD)",
     "compatibilite_criteres_utilisateur": "string"
@@ -522,7 +571,12 @@ Structure JSON stricte :
   },
   "10_financement": {
     "tableau_financement": [
-      {"poste": "string", "prix_demande": "string", "prix_cible": "string"}
+      {"poste": "Prix d'acquisition (parkings inclus)", "prix_demande": "string", "prix_cible": "string"},
+      {"poste": "Fonds propres 20 % + Frais (~4,5 % + cédule)", "prix_demande": "string", "prix_cible": "string"},
+      {"poste": "Prêt 80 % (1er rang 65 % / 2e rang 15 %)", "prix_demande": "string", "prix_cible": "string"},
+      {"poste": "Amortissement annuel 2e rang (sur 15 ans)", "prix_demande": "string", "prix_cible": "string"},
+      {"poste": "Charge théorique bancaire (5 % + 1 % + amort.)", "prix_demande": "string", "prix_cible": "string"},
+      {"poste": "Revenu brut annuel requis (tenue à 33 %)", "prix_demande": "string", "prix_cible": "string"}
     ],
     "hypotheses_prix_demande": "string",
     "hypotheses_prix_cible": "string",
@@ -548,7 +602,7 @@ Structure JSON stricte :
 }
 """
 
-# --- TEMPLATE HTML CORRIGÉ (Zéro grand blanc après les titres H2, Charte bleue PDF A4, 5-7 pages) ---
+# --- TEMPLATE HTML IDENTIQUE AU RENDU DE RAPPORT_ANALYSE_IMMO-V2 ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fr">
@@ -577,9 +631,6 @@ HTML_TEMPLATE = """
         h2 { color: #13294b; border-left: 4px solid #1f5fa8; background-color: #f6f9fc; padding: 4px 8px; font-size: 13px; margin-top: 14px; margin-bottom: 6px; }
         h3 { color: #1f5fa8; font-size: 11px; margin-top: 8px; margin-bottom: 4px; }
 
-        /* CORRECTION DES GRANDS BLANCS :
-           page-break-inside: auto sur table permet au tableau de commencer immédiatement sous son titre H2,
-           tandis que page-break-inside: avoid sur tr empêche qu'une ligne soit coupée en deux. */
         table { width: 100%; border-collapse: collapse; margin-bottom: 10px; page-break-inside: auto; break-inside: auto; font-family: 'Helvetica', Arial, sans-serif; }
         thead { display: table-header-group; }
         tr { page-break-inside: avoid; break-inside: avoid; }
@@ -606,6 +657,7 @@ HTML_TEMPLATE = """
         .badge-Elevée, .badge-Élevée { background-color: #e53e3e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 8pt; font-family: sans-serif; font-weight: bold; }
 
         ul { margin-top: 4px; margin-bottom: 8px; padding-left: 18px; }
+        ul.checklist { list-style-type: none; padding-left: 4px; }
         li { margin-bottom: 3px; }
         .avertissement { font-size: 7.8pt; color: #718096; text-align: justify; margin-top: 16px; border-top: 1px solid #cbd5e1; padding-top: 6px; page-break-inside: avoid; break-inside: avoid; }
     </style>
@@ -866,7 +918,7 @@ HTML_TEMPLATE = """
     </table>
 
     <p><strong>Annexe B — Points de visite spécifiques :</strong></p>
-    <ul>
+    <ul class="checklist">
         {% for point in data['annexe_b_points_visite'] %}
         <li>☐ {{ point.point_a_verifier_sur_place | format_badges | safe }}</li>
         {% endfor %}
@@ -896,7 +948,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- INTERFACE PRINCIPALE ÉPURÉE (Identique à votre fichier app.py) ---
+# --- INTERFACE PRINCIPALE ÉPURÉE ---
 mode_test_selectionne = modele_choisi.startswith("🧪")
 uploaded_file = st.file_uploader("Déposez la plaquette commerciale (PDF)", type="pdf")
 
@@ -907,32 +959,41 @@ if uploaded_file or mode_test_selectionne:
                 # CAS A : Mode Test Gratuit (0 crédit consommé)
                 if mode_test_selectionne:
                     fichiers_cache = sorted(CACHE_DIR.glob("*.json"), key=os.path.getmtime, reverse=True)
-                    if fichiers_cache:
-                        donnees_brutes = json.loads(fichiers_cache[0].read_text(encoding="utf-8"))
-                        donnees = fusionner_avec_defaut(donnees_brutes)
-                        info_cout = f"Mode Test Gratuit — chargé depuis votre dernier cache ({fichiers_cache[0].name}), 0 crédit utilisé"
-                    else:
-                        donnees = fusionner_avec_defaut(DONNEES_DEMO_TEST)
-                        info_cout = "Mode Test Gratuit — données de démonstration utilisées, 0 crédit utilisé"
+                    donnees = None
+                    for fc in fichiers_cache:
+                        candidat = normaliser_et_fusionner(json.loads(fc.read_text(encoding="utf-8")))
+                        if est_analyse_complete(candidat):
+                            donnees = candidat
+                            info_cout = f"Mode Test Gratuit — chargé depuis votre cache complet ({fc.name}), 0 crédit utilisé"
+                            break
+                    if donnees is None:
+                        donnees = normaliser_et_fusionner(DONNEES_DEMO_TEST)
+                        info_cout = "Mode Test Gratuit — données de démonstration complètes utilisées, 0 crédit utilisé"
 
-                # CAS B : Analyse d'un PDF avec cache SHA-256 + Prompt Caching Anthropic
+                # CAS B : Analyse d'un PDF avec cache intelligent + Prompt Caching Anthropic
                 else:
                     pdf_bytes_input = uploaded_file.read()
                     file_hash = hashlib.sha256(pdf_bytes_input).hexdigest()[:16]
                     fichier_cache_local = CACHE_DIR / f"{file_hash}.json"
 
-                    # Si ce PDF exact a déjà été analysé, on le charge gratuitement depuis le disque
-                    if fichier_cache_local.exists():
-                        donnees_brutes = json.loads(fichier_cache_local.read_text(encoding="utf-8"))
-                        donnees = fusionner_avec_defaut(donnees_brutes)
-                        info_cout = "Chargé depuis le cache local (ce PDF a déjà été analysé — 0 crédit utilisé)"
-                    else:
+                    donnees = None
+                    # Si la case "Activer le cache intelligent" est cochée et qu'un cache COMPLET existe
+                    if utiliser_cache and fichier_cache_local.exists():
+                        candidat = normaliser_et_fusionner(json.loads(fichier_cache_local.read_text(encoding="utf-8")))
+                        if est_analyse_complete(candidat):
+                            donnees = candidat
+                            info_cout = "Chargé depuis le cache intelligent (0 crédit utilisé)"
+                        else:
+                            # Suppression automatique d'un ancien cache incomplet/tronqué
+                            fichier_cache_local.unlink(missing_ok=True)
+
+                    if donnees is None:
                         pdf_base64 = base64.b64encode(pdf_bytes_input).decode("utf-8")
 
-                        # Appel en mode STREAMING avec Prompt Caching éphémère (-90% sur les tokens mis en cache)
+                        # max_tokens=32000 indispensable pour que le ThinkingBlock ne tronque jamais la fin du JSON
                         with client.messages.stream(
                             model=modele_choisi,
-                            max_tokens=16000,
+                            max_tokens=32000,
                             system=[
                                 {
                                     "type": "text",
@@ -956,7 +1017,10 @@ if uploaded_file or mode_test_selectionne:
                                         "type": "text",
                                         "text": (
                                             "Analyse ce document et renvoie uniquement l'objet JSON valide commençant par { et finissant par }. "
-                                            "Sois synthétique dans chaque champ pour que le JSON soit complet, et n'utilise jamais de guillemets droits (\") dans tes phrases."
+                                            "Remplis impérativement TOUTES les sections de 1 à 11 (y compris accessibilite_et_bruit, grille_ajustement, "
+                                            "tableau_financement, les 4 points de fiscalité, les annexes A et B et la conclusion). "
+                                            "Reste synthétique dans chaque champ (2 à 3 phrases max) pour que le JSON soit 100 % complet, "
+                                            "et n'utilise jamais de guillemets droits (\") dans tes phrases."
                                         )
                                     }
                                 ]
@@ -964,15 +1028,15 @@ if uploaded_file or mode_test_selectionne:
                         ) as stream:
                             response = stream.get_final_message()
 
-                        # Extraction, réparation et validation automatique du JSON
                         donnees = extraire_donnees_claude(response)
 
-                        # Sauvegarde dans le cache local pour ne plus jamais repayer ce même PDF
-                        fichier_cache_local.write_text(
-                            json.dumps(donnees, ensure_ascii=False, indent=2),
-                            encoding="utf-8"
-                        )
-                        info_cout = f"Analyse effectuée avec {modele_choisi} (mise en cache activée)"
+                        # On ne sauvegarde dans le cache que si l'analyse est complète (non tronquée)
+                        if utiliser_cache and est_analyse_complete(donnees):
+                            fichier_cache_local.write_text(
+                                json.dumps(donnees, ensure_ascii=False, indent=2),
+                                encoding="utf-8"
+                            )
+                        info_cout = f"Analyse complète effectuée avec {modele_choisi}"
 
                 # 4. Génération du PDF avec WeasyPrint
                 rendered_html = rendre_html_avec_filtres(HTML_TEMPLATE, donnees)
