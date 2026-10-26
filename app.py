@@ -14,6 +14,21 @@ from weasyprint import HTML
 st.set_page_config(page_title="Analyseur Immo IA", page_icon="🏢")
 st.title("🏢 Analyseur de Plaquette Immobilière par IA")
 
+# Masquer le menu, le footer Streamlit ("Built with Streamlit") et les éléments de bas de page
+st.markdown("""
+<style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden !important; display: none !important;}
+    .stApp > footer {display: none !important;}
+    div[data-testid="stFooter"] {display: none !important;}
+    div[data-testid="stDecoration"] {display: none !important;}
+    div[data-testid="stStatusWidget"] {visibility: hidden !important;}
+</style>
+""", unsafe_allow_html=True)
+
+
+
 # --- SYSTÈME D'AUTHENTIFICATION MULTI-UTILISATEURS ---
 def verifier_authentification():
     """Gère l'écran de connexion multi-utilisateurs via st.secrets."""
