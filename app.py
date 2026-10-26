@@ -14,6 +14,38 @@ from weasyprint import HTML
 st.set_page_config(page_title="Analyseur Immo IA", page_icon="🏢")
 st.title("🏢 Analyseur de Plaquette Immobilière par IA")
 
+# --- SYSTÈME D'AUTHENTIFICATION ---
+def verifier_mot_de_passe():
+    """Affiche un écran de verrouillage par mot de passe."""
+    # Si aucun mot de passe n'est configuré dans les secrets, on bloque par sécurité
+    if "PASSWORD" not in st.secrets:
+        st.error("Mot de passe administrateur non configuré dans les st.secrets.")
+        return False
+
+    # On vérifie si l'utilisateur est déjà authentifié dans la session en cours
+    if st.session_state.get("authentifie", False):
+        return True
+
+    # Formulaire de connexion épuré
+    st.markdown("<h2 style='text-align: center; color: #13294b;'>🔒 Espace Sécurisé — Due Diligence</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #666;'>Veuillez vous identifier pour accéder à l'outil d'analyse.</p>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        saisie_mdp = st.text_input("Mot de passe :", type="password")
+        if st.button("Se connecter 🔓", use_container_width=True):
+            if saisie_mdp == st.secrets["PASSWORD"]:
+                st.session_state["authentifie"] = True
+                st.rerun()
+            else:
+                st.error("❌ Mot de passe incorrect.")
+                
+    return False
+
+# Si l'utilisateur n'est pas authentifié, on stoppe l'exécution du reste de l'application
+if not verifier_mot_de_passe():
+    st.stop()
+
 # Dossier de cache local pour éviter de repayer l'API sur un même fichier PDF
 CACHE_DIR = Path(".cache_analyses")
 CACHE_DIR.mkdir(exist_ok=True)
