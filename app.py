@@ -11,7 +11,7 @@ from jinja2 import Environment
 from weasyprint import HTML
 
 # --- CONFIGURATION DE LA PAGE (Visuel d'origine) ---
-st.set_page_config(page_title="Analyseur Immo IA", page_icon="🏢")
+st.set_page_config(page_title="Analyseur Immo IA", page_icon="logo_immeuble.png")
 st.title("🏢 Analyseur de Plaquette Immobilière par IA")
 
 # Masquer le menu, le footer Streamlit ("Built with Streamlit") et les éléments de bas de page
